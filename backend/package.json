@@ -1,0 +1,41 @@
+{
+  "name": "notification-backend",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "worker": "tsx src/workers/index.ts",
+    "build": "prisma generate && tsc -p tsconfig.build.json",
+    "start": "node dist/src/server.js",
+    "start:worker": "node dist/src/workers/index.js",
+    "migrate": "tsx scripts/migrate.ts",
+    "seed": "tsx prisma/seed.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "jest --runInBand"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "bullmq": "^5.81.5",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "ioredis": "^5.11.1",
+    "pino": "^10.3.1",
+    "pino-http": "^11.0.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.14.0",
+    "@types/supertest": "^6.0.3",
+    "concurrently": "^10.0.5",
+    "jest": "^30.5.2",
+    "prisma": "^6.19.3",
+    "supertest": "^7.3.0",
+    "ts-jest": "^29.4.13",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1234
+      POSTGRES_DB: notifications
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d notifications']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://postgres:1234@postgres:5432/notifications?schema=public
+      REDIS_URL: redis://redis:6379
+      PORT: 5000
+      CORS_ORIGIN: http://localhost:3000
+    ports:
+      - '5000:5000'
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: sh -c "npm run migrate && npm run seed && npm run dev"
+
+  worker:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://postgres:1234@postgres:5432/notifications?schema=public
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    command: sh -c "npm run worker"
+
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:5000/api
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  redisdata:

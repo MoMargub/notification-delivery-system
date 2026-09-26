@@ -1,0 +1,13 @@
+@import 'tailwindcss';
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-gray-900 antialiased;
+  }
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+}

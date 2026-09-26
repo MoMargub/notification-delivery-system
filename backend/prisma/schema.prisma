@@ -1,0 +1,123 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Channel {
+  EMAIL
+  PUSH
+}
+
+enum CampaignStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum NotificationStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+}
+
+enum AttemptStatus {
+  SUCCESS
+  FAILED
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  createdAt DateTime @default(now())
+
+  recipients    CampaignRecipient[]
+  notifications Notification[]
+
+  @@map("users")
+}
+
+model Campaign {
+  id              String         @id @default(uuid())
+  title           String
+  message         String
+  channel         Channel
+  scheduledAt     DateTime
+  status          CampaignStatus @default(PENDING)
+  totalRecipients Int            @default(0)
+  completedCount  Int            @default(0)
+  failedCount     Int            @default(0)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  startedAt       DateTime?
+  completedAt     DateTime?
+
+  recipients    CampaignRecipient[]
+  notifications Notification[]
+
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@map("campaigns")
+}
+
+model CampaignRecipient {
+  id         Int      @id @default(autoincrement())
+  campaignId String
+  userId     Int
+  createdAt  DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id])
+
+  // Doubles as the keyset-scan index: WHERE campaignId = ? AND userId > ? ORDER BY userId
+  @@unique([campaignId, userId])
+  @@map("campaign_recipients")
+}
+
+model Notification {
+  id                  Int                @id @default(autoincrement())
+  campaignId          String
+  userId              Int
+  channel             Channel
+  message             String
+  status              NotificationStatus @default(PENDING)
+  retryCount          Int                @default(0)
+  lastError           String?
+  isVisible           Boolean            @default(true)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  processedAt         DateTime?
+  processingStartedAt DateTime?
+
+  campaign Campaign              @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user     User                  @relation(fields: [userId], references: [id])
+  attempts NotificationAttempt[]
+
+  // Idempotency: one notification per campaign/user/channel
+  @@unique([campaignId, userId, channel])
+  // GET /notifications?userId=: filter + keyset order in one index scan
+  @@index([userId, createdAt(sort: Desc), id(sort: Desc)])
+  // Progress counts per campaign
+  @@index([campaignId, status])
+  @@map("notifications")
+}
+
+model NotificationAttempt {
+  id             Int           @id @default(autoincrement())
+  notificationId Int
+  attemptNumber  Int
+  status         AttemptStatus
+  errorMessage   String?
+  createdAt      DateTime      @default(now())
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([notificationId])
+  @@map("notification_attempts")
+}
