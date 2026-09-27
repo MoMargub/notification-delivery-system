@@ -1,5 +1,6 @@
 services:
   postgres:
+    container_name: postgres
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: postgres
@@ -16,6 +17,7 @@ services:
       retries: 10
 
   redis:
+    container_name: redis
     image: redis:7-alpine
     ports:
       - '6379:6379'
@@ -28,6 +30,8 @@ services:
       retries: 10
 
   backend:
+    container_name: backend
+    image: backend
     build: ./backend
     environment:
       DATABASE_URL: postgresql://postgres:1234@postgres:5432/notifications?schema=public
@@ -38,22 +42,24 @@ services:
       - '5000:5000'
     volumes:
       - ./backend:/app
-      - /app/node_modules
+      - backend_node_modules:/app/node_modules
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: sh -c "npm run migrate && npm run seed && npm run dev"
+    command: sh -c "[ -d node_modules/.bin ] || npm install && npm run migrate && npm run seed && npm run dev"
 
   worker:
+    container_name: worker
+    image: worker
     build: ./backend
     environment:
       DATABASE_URL: postgresql://postgres:1234@postgres:5432/notifications?schema=public
       REDIS_URL: redis://redis:6379
     volumes:
       - ./backend:/app
-      - /app/node_modules
+      - backend_node_modules:/app/node_modules
     depends_on:
       postgres:
         condition: service_healthy
@@ -61,9 +67,11 @@ services:
         condition: service_healthy
       backend:
         condition: service_started
-    command: sh -c "npm run worker"
+    command: sh -c "[ -d node_modules/.bin ] || npm install && npm run worker"
 
   frontend:
+    container_name: frontend
+    image: frontend
     build: ./frontend
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:5000/api
@@ -71,11 +79,26 @@ services:
       - '3000:3000'
     volumes:
       - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
+      - frontend_next:/app/.next
+      - frontend_node_modules:/app/node_modules
     depends_on:
       - backend
+    # Tailwind v4 ships multiple Rust-compiled native binaries. The lockfile is
+    # generated on Windows so all Alpine/musl variants are missing. Install them
+    # at startup so the fix survives volume reuse across restarts.
+    command: >
+      sh -c "
+        ([ -d node_modules/.bin ] || npm install) &&
+        ([ -d node_modules/@tailwindcss/oxide-linux-x64-musl ] || npm install --no-save --cpu=x64 --os=linux --libc=musl lightningcss @tailwindcss/oxide-linux-x64-musl --silent) &&
+        cd node_modules/@tailwindcss/node &&
+        ([ -d node_modules/lightningcss ] || npm install --no-save --cpu=x64 --os=linux --libc=musl lightningcss --silent) &&
+        cd /app &&
+        npm run dev
+      "
 
 volumes:
   pgdata:
   redisdata:
+  frontend_next:
+  backend_node_modules:
+  frontend_node_modules:
