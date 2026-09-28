@@ -106,7 +106,7 @@ The `worker` container is its own isolated Node.js process (no `worker_threads`)
 
 ```text
 POST /campaigns
-  → INSERT campaign + campaign_recipients (one INSERT … SELECT)
+  → INSERT campaign + campaign_recipients (using Prisma createMany)
   → Enqueue 1 job to campaignQueue
   → Return 202 Accepted
 
@@ -116,8 +116,8 @@ Worker picks up the campaign job:
       WHERE campaignId = ? AND userId > :cursor
       ORDER BY userId LIMIT 1000              ← keyset scan
 
-    INSERT INTO notifications … FROM unnest(:userIds)
-      ON CONFLICT DO NOTHING                  ← idempotent
+    prisma.notification.createMany({ ... })
+      skipDuplicates: true                  ← idempotent
 
     addBulk(notificationQueue, all PENDING notifications in this batch)
 
@@ -129,8 +129,8 @@ Worker picks up the campaign job:
 
 - **Keyset scan** over the `UNIQUE(campaignId, userId)` index → constant cost per batch, no `OFFSET`, no extra index.
 - **O(batch) memory** — only integer user IDs of one batch live in Node at a time.
-- **Set-based SQL** — recipients and notifications are created with `INSERT … SELECT` and `unnest()`, never row-by-row.
-- **Crash-safe re-run** — `ON CONFLICT DO NOTHING` on inserts + deterministic BullMQ job IDs make the entire expansion idempotent.
+- **Prisma `createMany` with `skipDuplicates`** — notifications are created in bulk per batch, never row-by-row. Prisma translates this to a single `INSERT ... ON CONFLICT DO NOTHING`.
+- **Crash-safe re-run** — `skipDuplicates: true` on inserts + deterministic BullMQ job IDs make the entire expansion idempotent.
 
 ### Progress Tracking
 
@@ -167,15 +167,17 @@ Individual failures inside a `COMPLETED` campaign are visible through `failedCou
 
 Before sending, a worker **atomically claims** the notification row:
 
-```sql
-UPDATE notifications
-SET    status = 'PROCESSING', "processingStartedAt" = now()
-WHERE  id = $1 AND status = 'PENDING'
-RETURNING *;
+```typescript
+// Prisma updateMany — atomic compare-and-swap
+const result = await prisma.notification.updateMany({
+  where: { id: notificationId, status: 'PENDING' },
+  data: { status: 'PROCESSING', processingStartedAt: new Date() },
+});
+if (result.count === 0) return 'skipped'; // already claimed
 ```
 
-- Only the worker that successfully flips `PENDING → PROCESSING` delivers it. All others receive zero rows and **skip**.
-- A test fires **10 parallel workers** at the same notification and asserts exactly **one** provider call.
+- Only the worker whose `updateMany` returns `count = 1` delivers the notification. All others get `count = 0` and **skip** immediately.
+- PostgreSQL serialises the `UPDATE WHERE status = 'PENDING'` under the hood, ensuring exactly one worker wins per notification.
 
 ---
 
@@ -194,7 +196,7 @@ flowchart TD
 
 **Key details:**
 - **Budget:** `MAX_NOTIFICATION_RETRIES` = 3 attempts total.
-- **Backoff:** Exponential — 1s, 2s (configured in BullMQ job options).
+- **Backoff:** Exponential — notification jobs start at a `1s` base delay; campaign expand jobs start at `5s`. Both double on each retry (configured in `queue/index.ts`).
 - **Transactional logging:** Every failure atomically updates the notification row **and** appends a `notification_attempts` record in one `$transaction`.
 - **Last attempt:** Sets `FAILED` and does **not** rethrow, so BullMQ stops retrying.
 - **Crash resilience:** The retry budget is derived from `retryCount` in the database, not BullMQ's in-memory counter — it survives worker restarts and re-queues.
@@ -245,7 +247,7 @@ LIMIT 21;
 | Decision | Trade-off |
 | --- | --- |
 | **One BullMQ job per notification** | Native per-notification retry/backoff and easy concurrency limits, at the cost of Redis memory (peak ~51 MB at 100K jobs). Batch jobs would be lighter but need custom retry bookkeeping. |
-| **Recipients persisted inside the request** | One set-based `INSERT … SELECT` (~seconds at 100K). Beyond ~1M recipients this should move into the worker. |
+| **Recipients persisted inside the request** | We currently load user IDs into memory and use Prisma's `createMany`. This is fast enough for 100K, but unbounded. For >1M recipients, this must be refactored to use a raw `INSERT ... SELECT` to avoid Node.js memory limits. |
 | **Progress lag** | Campaign row lags by up to `RECONCILE_INTERVAL_SECONDS` (5s). Chosen over a per-notification counter update which would lock the row aggressively. The `/progress` endpoint itself queries live counts. |
 | **At-least-once delivery** | Not exactly-once — no queue can guarantee that against an external provider without distributed transactions. |
 | **No authentication** | Out of scope for this system. Would be added as Express middleware in production. |

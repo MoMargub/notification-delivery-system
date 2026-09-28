@@ -157,9 +157,9 @@ Use these exact credentials to connect:
 
 ## ⚙️ Mock Providers & Retry Logic
 
-`MockEmailProvider` and `MockPushProvider` simulate network conditions and failures deterministically to demonstrate our robust retry logic:
-- `userId % 50 === 0` → Always fails. Attempts 3 times, then gets marked as `FAILED` (2,000 out of 100,000 users).
-- `userId % 10 === 0` → Fails twice, but gracefully succeeds on attempt 3 (8,000 users).
+`MockEmailProvider` and `MockPushProvider` simulate realistic network conditions and failures using randomized probability to demonstrate our robust retry logic:
+- **~2% permanent failure rate** → Simulates a hard bounce (e.g., bad email). Always fails, gets marked as `FAILED` (randomly around 2,000 out of 100,000 users).
+- **~10% temporary failure rate** → Simulates a network glitch. Fails on the first or second try, but gracefully succeeds on attempt 3.
 - Everyone else succeeds on attempt 1.
 
 *Tip: In the frontend, filter the notifications page by status **Failed** to see the `lastError` and retry counts.*
