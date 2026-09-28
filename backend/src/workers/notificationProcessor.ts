@@ -1,5 +1,4 @@
-import { Notification } from '@prisma/client';
-import { NOW_UTC, prisma } from '../config/db';
+import { prisma } from '../config/db';
 import { env } from '../config/env';
 import { providers } from '../providers';
 
@@ -11,17 +10,32 @@ export type ProcessResult = 'sent' | 'failed' | 'skipped';
  */
 export async function processNotification(notificationId: number): Promise<ProcessResult> {
   // Atomic claim: only the worker that flips PENDING -> PROCESSING may deliver.
-  const [notification] = await prisma.$queryRaw<Notification[]>`
-    UPDATE notifications
-    SET status = 'PROCESSING', "processingStartedAt" = ${NOW_UTC}, "updatedAt" = ${NOW_UTC}
-    WHERE id = ${notificationId} AND status = 'PENDING'
-    RETURNING *`;
+  const result = await prisma.notification.updateMany({
+    where: { id: notificationId, status: 'PENDING' },
+    data: {
+      status: 'PROCESSING',
+      processingStartedAt: new Date(),
+      updatedAt: new Date(),
+    },
+  });
+
+  if (result.count === 0) return 'skipped';
+
+  const notification = await prisma.notification.findUnique({
+    where: { id: notificationId },
+  });
+
   if (!notification) return 'skipped';
 
   const attemptNumber = notification.retryCount + 1;
 
+  const provider = providers[notification.channel];
+  if (!provider) {
+    throw new Error(`No provider registered for channel: ${notification.channel}`);
+  }
+
   try {
-    await providers[notification.channel].send(notification);
+    await provider.send(notification);
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     const isLastAttempt = attemptNumber >= env.MAX_NOTIFICATION_RETRIES;

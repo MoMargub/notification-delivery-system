@@ -10,8 +10,7 @@
     "start:worker": "node dist/src/workers/index.js",
     "migrate": "tsx scripts/migrate.ts",
     "seed": "tsx prisma/seed.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "jest --runInBand"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
@@ -27,14 +26,9 @@
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
-    "@types/jest": "^30.0.0",
     "@types/node": "^22.14.0",
-    "@types/supertest": "^6.0.3",
     "concurrently": "^10.0.5",
-    "jest": "^30.5.2",
     "prisma": "^6.19.3",
-    "supertest": "^7.3.0",
-    "ts-jest": "^29.4.13",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   }

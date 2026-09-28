@@ -1,8 +1,10 @@
-import { Campaign, NotificationStatus, Prisma } from '@prisma/client';
-import { NOW_UTC, prisma } from '../../config/db';
+import { CampaignStatus, NotificationStatus } from '@prisma/client';
+import { prisma } from '../../config/db';
 import { HttpError } from '../../middleware/errorHandler';
 import { campaignJobOptions, campaignQueue } from '../../queue';
 import { CreateCampaignInput, ListCampaignsQuery } from './campaigns.schemas';
+
+type Campaign = Awaited<ReturnType<typeof prisma.campaign.findUniqueOrThrow>>;
 
 export async function findCampaign(id: string) {
   const campaign = await prisma.campaign.findUnique({ where: { id } });
@@ -17,12 +19,30 @@ export async function createCampaign(input: CreateCampaignInput) {
   const campaign = await prisma.$transaction(
     async (tx) => {
       const created = await tx.campaign.create({ data: { ...data, scheduledAt } });
-      // Set-based insert: one statement for any audience size, never materialised in Node.
-      const filter = userIds ? Prisma.sql`WHERE u.id = ANY(${userIds}::int[])` : Prisma.empty;
-      const totalRecipients = await tx.$executeRaw`
-        INSERT INTO campaign_recipients ("campaignId", "userId", "createdAt")
-        SELECT ${created.id}::text, u.id, ${NOW_UTC} FROM users u ${filter}
-        ON CONFLICT DO NOTHING`;
+      let users: { id: number }[] = [];
+      if (userIds && userIds.length > 0) {
+        users = await tx.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true },
+        });
+      } else {
+        users = await tx.user.findMany({
+          select: { id: true },
+        });
+      }
+
+      if (users.length === 0) throw new HttpError(400, 'No matching recipients');
+
+      const result = await tx.campaignRecipient.createMany({
+        data: users.map((u) => ({
+          campaignId: created.id,
+          userId: u.id,
+          createdAt: new Date(),
+        })),
+        skipDuplicates: true,
+      });
+
+      const totalRecipients = result.count;
       if (totalRecipients === 0) throw new HttpError(400, 'No matching recipients');
       return tx.campaign.update({ where: { id: created.id }, data: { totalRecipients } });
     },
@@ -38,8 +58,8 @@ export async function createCampaign(input: CreateCampaignInput) {
 }
 
 export async function listCampaigns({ status, channel, page, limit }: ListCampaignsQuery) {
-  const where: Prisma.CampaignWhereInput = {
-    ...(status && { status }),
+  const where = {
+    ...(status && { status: status as CampaignStatus }),
     ...(channel && { channel }),
   };
   const [items, total, groups] = await Promise.all([
@@ -47,8 +67,8 @@ export async function listCampaigns({ status, channel, page, limit }: ListCampai
     prisma.campaign.count({ where }),
     prisma.campaign.groupBy({ by: ['status'], _count: { _all: true } }),
   ]);
-  const statusCounts = { PENDING: 0, PROCESSING: 0, COMPLETED: 0, FAILED: 0 };
-  for (const g of groups) statusCounts[g.status] = g._count._all;
+  const statusCounts: Record<CampaignStatus, number> = { PENDING: 0, PROCESSING: 0, COMPLETED: 0, FAILED: 0 };
+  for (const g of groups) statusCounts[g.status as CampaignStatus] = g._count._all;
   return { items, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)), statusCounts };
 }
 
@@ -67,7 +87,7 @@ export async function countNotificationsByStatus(campaignId: string) {
 export async function getProgress(id: string) {
   const { status, totalRecipients } = await findCampaign(id);
   const counts = await countNotificationsByStatus(id);
-  const { PROCESSING: processing, SENT: completedCount, FAILED: failedCount } = counts;
+  const { PROCESSING: processing = 0, SENT: completedCount = 0, FAILED: failedCount = 0 } = counts;
   return {
     status,
     totalRecipients,
@@ -82,7 +102,7 @@ export async function getProgress(id: string) {
 /** Start now: promote a delayed job, or (re-)enqueue if Redis lost it. Safe to call repeatedly. */
 export async function processCampaign(id: string): Promise<Campaign> {
   const campaign = await findCampaign(id);
-  if (campaign.status !== 'PENDING' && campaign.status !== 'PROCESSING') {
+  if (campaign.status !== CampaignStatus.PENDING && campaign.status !== CampaignStatus.PROCESSING) {
     throw new HttpError(409, `Campaign is already ${campaign.status.toLowerCase()}`);
   }
   const job = await campaignQueue.getJob(`campaign-${id}`);

@@ -1,4 +1,4 @@
-import { NOW_UTC, prisma } from '../config/db';
+import { prisma } from '../config/db';
 import { env } from '../config/env';
 import { countNotificationsByStatus } from '../modules/campaigns/campaigns.service';
 import { notificationJob, notificationQueue } from '../queue';
@@ -17,7 +17,7 @@ export async function reconcileCampaigns(): Promise<void> {
   });
 
   for (const campaign of active) {
-    const { SENT: completedCount, FAILED: failedCount } = await countNotificationsByStatus(campaign.id);
+    const { SENT: completedCount = 0, FAILED: failedCount = 0 } = await countNotificationsByStatus(campaign.id);
     const finished = completedCount + failedCount >= campaign.totalRecipients;
     const changed = completedCount !== campaign.completedCount || failedCount !== campaign.failedCount;
     if (!finished && !changed) continue;
@@ -33,20 +33,37 @@ export async function reconcileCampaigns(): Promise<void> {
   }
 }
 
-/** Notifications stuck in PROCESSING (worker crashed mid-send) go back to PENDING and are re-enqueued. */
 export async function recoverStuckNotifications(): Promise<number> {
-  const rows = await prisma.$queryRaw<Array<{ id: number }>>`
-    UPDATE notifications
-    SET status = 'PENDING', "updatedAt" = ${NOW_UTC}
-    WHERE status = 'PROCESSING'
-      AND id IN (
-        SELECT id FROM notifications
-        WHERE status = 'PROCESSING'
-          AND "processingStartedAt" < ${NOW_UTC} - make_interval(secs => ${env.PROCESSING_TIMEOUT_SECONDS})
-        LIMIT ${RECOVERY_BATCH})
-    RETURNING id`;
-  await notificationQueue.addBulk(rows.map((r) => notificationJob(r.id)));
-  return rows.length;
+  const timeoutDate = new Date(Date.now() - env.PROCESSING_TIMEOUT_SECONDS * 1000);
+  
+  const stuckNotifications = await prisma.notification.findMany({
+    where: {
+      status: 'PROCESSING',
+      processingStartedAt: {
+        lt: timeoutDate,
+      },
+    },
+    select: { id: true },
+    take: RECOVERY_BATCH,
+  });
+
+  const ids = stuckNotifications.map((n) => n.id);
+
+  if (ids.length > 0) {
+    await prisma.notification.updateMany({
+      where: {
+        id: { in: ids },
+      },
+      data: {
+        status: 'PENDING',
+        updatedAt: new Date(),
+      },
+    });
+    
+    await notificationQueue.addBulk(ids.map((id) => notificationJob(id)));
+  }
+
+  return ids.length;
 }
 
 export async function runMaintenance(): Promise<void> {
