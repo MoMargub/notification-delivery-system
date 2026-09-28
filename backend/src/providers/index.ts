@@ -4,15 +4,20 @@ export interface NotificationProvider {
   send(notification: Notification): Promise<void>;
 }
 
-// Deterministic failures, so retry behaviour is reproducible:
-//   userId % 50 === 0 -> always fails (ends FAILED after the last attempt)
-//   userId % 10 === 0 -> fails the first two attempts, then succeeds
+// Randomized failures, so retry behaviour is realistic and varies:
+//   ~2% chance to fail permanently
+//   ~10% chance to fail temporarily (succeeds on later attempts)
 abstract class MockProvider implements NotificationProvider {
   abstract readonly name: string;
 
-  async send({ userId, retryCount }: Notification): Promise<void> {
-    if (userId % 50 === 0) throw new Error(`${this.name}: recipient permanently rejected`);
-    if (userId % 10 === 0 && retryCount < 2) throw new Error(`${this.name}: temporary provider error`);
+  async send({ retryCount }: Notification): Promise<void> {
+    const rand = Math.random();
+    
+    // 2% permanent failure rate
+    if (rand < 0.02) throw new Error(`${this.name}: recipient permanently rejected`);
+    
+    // 10% temporary failure rate (only fails if it's the first or second attempt)
+    if (rand < 0.12 && retryCount < 2) throw new Error(`${this.name}: temporary provider error`);
   }
 }
 
